@@ -9,6 +9,12 @@ export default class MyAnimeListTracker extends Tracker {
         setStorageValue('verifier', code)
         return `https://myanimelist.net/v1/oauth2/authorize?response_type=code&client_id=e5a028c76621493bacc52ca0dd309ecd&code_challenge=${code}&code_challenge_method=plain`
     }
+    logout(): void {
+        setKeychainValue('access', '')
+        setKeychainValue('refresh', '')
+        setStorageValue('userId', '')
+        setLoginStatus(false)
+    }
     async handleResponse(url: string): Promise<void> {
         const code = url.split("=")[1]
         const verifier = getStorageValue('verifier')
@@ -20,8 +26,6 @@ export default class MyAnimeListTracker extends Tracker {
             },
             body: `client_id=e5a028c76621493bacc52ca0dd309ecd&grant_type=authorization_code&code=${code}&code_verifier=${verifier}`
         }).then(res => JSON.parse(res.data))
-        console.log(`client_id=e5a028c76621493bacc52ca0dd309ecd&grant_type=authorization_code&code=${code}&code_verifier=${verifier}`)
-        console.log(JSON.stringify(res))
         if (typeof res.access_token === 'undefined') throw new Error("Verification was unsuccessful.")
         const user = await fetch("https://api.myanimelist.net/v2/users/@me", {
             headers: {
@@ -31,6 +35,7 @@ export default class MyAnimeListTracker extends Tracker {
         setKeychainValue('access', res.access_token)
         setKeychainValue('refresh', res.refresh_token)
         setStorageValue('userId', user.id)
+        setLoginStatus(true)
     }
 
     parseStatus(status: string): History.Status {

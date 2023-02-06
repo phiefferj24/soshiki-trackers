@@ -4,6 +4,11 @@ export default class AniListTracker extends Tracker {
     getAuthUrl(): string {
         return 'https://anilist.co/api/v2/oauth/authorize?client_id=10765&response_type=token'
     }
+    logout(): void {
+        setKeychainValue("access", '')
+        setStorageValue("userId", '')
+        setLoginStatus(false)
+    }
 
     async handleResponse(url: string): Promise<void> {
         const access = url.split("#")[1].split("&")[0].split("=")[1]
@@ -19,6 +24,7 @@ export default class AniListTracker extends Tracker {
         }).then(res => JSON.parse(res.data))
         setKeychainValue("access", access)
         setStorageValue("userId", `${res.data.Viewer.id}`)
+        setLoginStatus(true)
     }
 
     parseStatus(status: string): History.Status {
