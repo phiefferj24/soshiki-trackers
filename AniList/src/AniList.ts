@@ -1,4 +1,4 @@
-import { createEntryResults, createHistory, createShortEntry, EntryResults, EntryResultsInfo, fetch, History, MediaType, Tracker } from "soshiki-sources"
+import { createEntry, createEntryResults, createHistory, createShortEntry, Entry, EntryContentRating, EntryResults, EntryResultsInfo, EntrySeason, EntryStatus, fetch, History, MediaType, Tracker } from "soshiki-sources/dist"
 
 export default class AniListTracker extends Tracker {
     getAuthUrl(): string {
@@ -146,4 +146,141 @@ export default class AniListTracker extends Tracker {
         })
     }
 
+    getSupportedMediaTypes(): ("text" | "image" | "video")[] {
+        return ["text", "image", "video"]
+    }
+
+    async getDiscoverEntries(mediaType: MediaType, category: string): Promise<Entry[]> {
+        let searchComponents: string[] = []
+        switch (category) {
+            case "Featured": 
+                searchComponents.push("sort: START_DATE_DESC")
+                searchComponents.push("popularity_greater: 10000")
+                searchComponents.push("status: RELEASING")
+                break
+            case "Trending": searchComponents.push("sort: TRENDING_DESC"); break
+            case "Top": searchComponents.push("sort: POPULARITY_DESC"); break
+            case "New This Season":
+                searchComponents.push("sort: POPULARITY_DESC")
+                const month = (new Date().getMonth() + 1) % 12 + 1 // dec, jan, feb, ..., nov (for seasons)
+                searchComponents.push(`season: ${month <= 3 ? "WINTER" : month <= 6 ? "SPRING" : month <= 9 ? "SUMMER" : "FALL"}`)
+                searchComponents.push(`seasonYear: ${new Date().getFullYear() + (month === 1 ? 1 : 0)}`) // flips year to the next year if month is december
+                break
+            case "Upcoming":
+                searchComponents.push("sort: POPULARITY_DESC")
+                searchComponents.push(`startDate_greater: ${new Date().getFullYear()}${("0" + new Date().getMonth()).slice(-2)}${("0" + new Date().getDay()).slice(-2)}`)
+                break
+            case "Movies":
+                searchComponents.push("sort: TRENDING_DESC")
+                searchComponents.push("format: MOVIE")
+                break
+            default:
+                searchComponents.push("sort: ID")
+        }
+        const res = await fetch("https://graphql.anilist.co", {
+            method: "POST",
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                query: `
+query { 
+    Page (page: 1, perPage: 20) { 
+        media(type: ${mediaType === MediaType.VIDEO ? 'ANIME' : 'MANGA'}, ${searchComponents.join(", ")}) { 
+            id, 
+            title { 
+                english, 
+                romaji 
+            }, 
+            coverImage { 
+                large,
+                extraLarge
+            }, 
+            bannerImage,
+            staff { 
+                nodes { 
+                    name { 
+                        full 
+                    } 
+                } 
+            },
+            genres,
+            ${mediaType === MediaType.VIDEO ? "episodes" : "chapters"},
+            siteUrl,
+            isAdult,
+            season,
+            seasonYear,
+            status(version: 2),
+            description(asHtml: false)
+        } 
+    } 
+}`
+            })
+        }).then(res => JSON.parse(res.data))
+        return res.data.Page.media.map((entry: any) => createEntry({
+            id: `${entry.id}`,
+            title: entry.title?.english ?? entry.title?.romaji ?? "",
+            cover: entry.coverImage?.extraLarge ?? entry.coverImage?.large ?? "",
+            banner: entry.bannerImage ?? "",
+            staff: entry.staff?.nodes?.map((staff: any) => staff.name?.full ?? "") ?? [],
+            tags: entry.genres ?? [],
+            nsfw: entry.isAdult ? EntryContentRating.nsfw : EntryContentRating.safe,
+            status: entry.status === "FINISHED" ? EntryStatus.completed : entry.status === "RELEASING" ? EntryStatus.ongoing : entry.status === "CANCELLED" ? EntryStatus.dropped : entry.status === "HIATUS" ? EntryStatus.hiatus : EntryStatus.unknown,
+            score: typeof entry.meanScore === "number" ? entry.meanScore / 10 : undefined,
+            items: entry.episodes ?? entry.chapters ?? undefined,
+            season: entry.season === "WINTER" ? EntrySeason.winter : entry.season === "SPRING" ? EntrySeason.spring : entry.season === "SUMMER" ? EntrySeason.summer : EntrySeason.fall,
+            year: entry.seasonYear,
+            url: entry.siteUrl ?? "",
+            description: entry.description ?? ""
+        }))
+    }
+
+    async getSeeMoreEntries(previousInfo: EntryResultsInfo | null, mediaType: MediaType, category: string): Promise<EntryResults> {
+        const page = (previousInfo?.page ?? 0) + 1
+        let searchComponents: string[] = []
+        switch (category) {
+            case "Featured": searchComponents.push("sort: POPULARITY_DESC"); break
+            case "Trending": searchComponents.push("sort: TRENDING_DESC"); break
+            case "Top": searchComponents.push("sort: POPULARITY_DESC"); break
+            case "New This Season":
+                searchComponents.push("sort: POPULARITY_DESC")
+                const month = (new Date().getMonth() + 1) % 12 + 1 // dec, jan, feb, ..., nov (for seasons)
+                searchComponents.push(`season: ${month <= 3 ? "WINTER" : month <= 6 ? "SPRING" : month <= 9 ? "SUMMER" : "FALL"}`)
+                searchComponents.push(`seasonYear: ${new Date().getFullYear() + (month === 1 ? 1 : 0)}`) // flips year to the next year if month is december
+                break
+            case "Upcoming":
+                searchComponents.push("sort: POPULARITY_DESC")
+                searchComponents.push(`startDate_greater: ${new Date().getFullYear()}${("0" + new Date().getMonth()).slice(-2)}${("0" + new Date().getDay()).slice(-2)}`)
+                break
+            case "Movies":
+                searchComponents.push("sort: TRENDING_DESC")
+                searchComponents.push("format: MOVIE")
+                break
+            default:
+                searchComponents.push("sort: ID")
+        }
+        const res = await fetch("https://graphql.anilist.co", {
+            method: "POST",
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                query: `query { Page (page: ${page}, perPage: 50) { pageInfo { hasNextPage }, media(type: ${mediaType === MediaType.VIDEO ? 'ANIME' : 'MANGA'}, ${searchComponents.join(", ")}) { id, title { english, romaji }, coverImage { large }, staff { nodes { name { full } } } } } }`
+            })
+        }).then(res => JSON.parse(res.data))
+        return createEntryResults({
+            page: page,
+            hasMore: res.data.Page.pageInfo.hasNextPage ?? false,
+            entries: res.data.Page.media.map((entry: any) => createShortEntry({
+                id: `${entry.id}`,
+                title: entry.title.english ?? entry.title.romaji ?? "",
+                subtitle: entry.staff.nodes[0]?.name.full ?? "",
+                cover: entry.coverImage.large ?? ""
+            }))
+        })
+    }
+
+    getDiscoverSections(): string[] {
+        return ["New This Season", "Upcoming", "Movies"]
+    }
 }
