@@ -14,6 +14,6 @@
     "browserify": "^17.0.0"
   },
   "dependencies": {
-    "soshiki-sources": "file:../../soshiki-sources/soshiki-sources-0.1.0.tgz"
+    "soshiki-sources": "^0.2.0"
   }
 }

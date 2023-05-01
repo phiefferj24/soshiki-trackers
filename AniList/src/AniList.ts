@@ -1,13 +1,15 @@
-import { createEntry, createEntryResults, createHistory, createShortEntry, Entry, EntryContentRating, EntryResults, EntryResultsInfo, EntrySeason, EntryStatus, fetch, History, MediaType, Tracker } from "soshiki-sources/dist"
+import { createEntry, createEntryResults, createHistory, createShortEntry, createVideoEpisode, Entry, EntryContentRating, EntryResults, EntryResultsInfo, EntrySeason, EntryStatus, fetch, History, ImageChapter, MediaType, TextChapter, Tracker, VideoEpisode, VideoEpisodeType } from "soshiki-sources/dist"
 
 export default class AniListTracker extends Tracker {
+    id: "anilist"
+
     getAuthUrl(): string {
         return 'https://anilist.co/api/v2/oauth/authorize?client_id=10765&response_type=token'
     }
     logout(): void {
-        setKeychainValue("access", '')
-        setStorageValue("userId", '')
-        setLoginStatus(false)
+        this.setKeychainValue("access", '')
+        this.setStorageValue("userId", '')
+        this.setLoginStatus(false)
     }
 
     async handleResponse(url: string): Promise<void> {
@@ -22,9 +24,9 @@ export default class AniListTracker extends Tracker {
                 query: `query { Viewer { id } }`
             })
         }).then(res => JSON.parse(res.data))
-        setKeychainValue("access", access)
-        setStorageValue("userId", `${res.data.Viewer.id}`)
-        setLoginStatus(true)
+        this.setKeychainValue("access", access)
+        this.setStorageValue("userId", `${res.data.Viewer.id}`)
+        this.setLoginStatus(true)
     }
 
     parseStatus(status: string): History.Status {
@@ -51,9 +53,9 @@ export default class AniListTracker extends Tracker {
     }
 
     async getHistory(mediaType: MediaType, id: string): Promise<History | null> {
-        const access = getKeychainValue("access")
+        const access = this.getKeychainValue("access")
         if (access === null || typeof access === 'undefined') throw new Error("Access token not found.")
-        const userId = getStorageValue("userId")
+        const userId = this.getStorageValue("userId")
         if (typeof userId !== 'string') throw new Error("User ID not found.")
         const res = await fetch("https://graphql.anilist.co", {
             method: "POST",
@@ -77,7 +79,7 @@ export default class AniListTracker extends Tracker {
     }
 
     async setHistory(mediaType: MediaType, id: string, history: History): Promise<void> {
-        const access = getKeychainValue("access")
+        const access = this.getKeychainValue("access")
         if (access === null || typeof access === 'undefined') throw new Error("Access token not found.")
         let args: string[] = []
         for (const entry of Object.entries(history)) {
@@ -104,7 +106,7 @@ export default class AniListTracker extends Tracker {
     }
 
     async deleteHistory(mediaType: MediaType, id: string): Promise<void> {
-        const access = getKeychainValue("access")
+        const access = this.getKeychainValue("access")
         if (access === null || typeof access === 'undefined') throw new Error("Access token not found.")
         const historyEntry = await this.getHistory(mediaType, id)
         if (historyEntry === null) throw new Error("History entry does not exist.")
@@ -122,7 +124,7 @@ export default class AniListTracker extends Tracker {
 
     async getSearchResults(previousInfo: EntryResultsInfo | null, mediaType: MediaType, query: string): Promise<EntryResults> {
         const page = previousInfo === null ? 1 : previousInfo.page + 1
-        const access = getKeychainValue("access")
+        const access = this.getKeychainValue("access")
         if (access === null || typeof access === 'undefined') throw new Error("Access token not found.")
         const res = await fetch("https://graphql.anilist.co", {
             method: "POST",
@@ -177,6 +179,7 @@ export default class AniListTracker extends Tracker {
             default:
                 searchComponents.push("sort: ID")
         }
+        if (mediaType === MediaType.TEXT) searchComponents.push("format: NOVEL")
         const res = await fetch("https://graphql.anilist.co", {
             method: "POST",
             headers: {
@@ -239,7 +242,11 @@ query {
         const page = (previousInfo?.page ?? 0) + 1
         let searchComponents: string[] = []
         switch (category) {
-            case "Featured": searchComponents.push("sort: POPULARITY_DESC"); break
+            case "Featured": 
+                searchComponents.push("sort: START_DATE_DESC")
+                searchComponents.push("popularity_greater: 10000")
+                searchComponents.push("status: RELEASING")
+                break
             case "Trending": searchComponents.push("sort: TRENDING_DESC"); break
             case "Top": searchComponents.push("sort: POPULARITY_DESC"); break
             case "New This Season":
@@ -265,7 +272,28 @@ query {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                query: `query { Page (page: ${page}, perPage: 50) { pageInfo { hasNextPage }, media(type: ${mediaType === MediaType.VIDEO ? 'ANIME' : 'MANGA'}, ${searchComponents.join(", ")}) { id, title { english, romaji }, coverImage { large }, staff { nodes { name { full } } } } } }`
+                query: `
+query { 
+    Page (page: ${page}, perPage: 50) { 
+        media(type: ${mediaType === MediaType.VIDEO ? 'ANIME' : 'MANGA'}, ${searchComponents.join(", ")}) { 
+            id, 
+            title { 
+                english, 
+                romaji 
+            }, 
+            coverImage { 
+                large
+            },
+            staff { 
+                nodes { 
+                    name { 
+                        full 
+                    } 
+                } 
+            }
+        } 
+    } 
+}`
             })
         }).then(res => JSON.parse(res.data))
         return createEntryResults({
@@ -280,7 +308,39 @@ query {
         })
     }
 
-    getDiscoverSections(): string[] {
-        return ["New This Season", "Upcoming", "Movies"]
+    getDiscoverSections(mediaType: MediaType): string[] {
+        if (mediaType == MediaType.VIDEO) return ["New This Season", "Upcoming", "Movies"]
+        else return ["Upcoming"]
+    }
+
+    async getItems(mediaType: MediaType, id: string): Promise<TextChapter[] | ImageChapter[] | VideoEpisode[]> {
+        if(mediaType === MediaType.VIDEO) {
+            const res = await fetch("https://graphql.anilist.co", {
+                method: "POST",
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    query: `
+    query { 
+        Media(type: ANIME, id: ${id}) { 
+            streamingEpisodes {
+                title,
+                thumbnail
+            }
+        } 
+    }`
+                })
+            }).then(res => JSON.parse(res.data))
+            return res.data.Media.streamingEpisodes.map(item => createVideoEpisode({
+                id: "",
+                entryId: id,
+                episode: parseFloat(item.title.match(/^.*?(([\d]+[\d\.]?[\d]*)|([\d]*[\d\.]?[\d]+)).*$/)?.[1] ?? "0"),
+                name: item.title.match(/ - (.*)$/)?.[1] ?? item.title,
+                thumbnail: item.thumbnail,
+                type: VideoEpisodeType.unknown
+            }))
+        }
+        return []
     }
 }
